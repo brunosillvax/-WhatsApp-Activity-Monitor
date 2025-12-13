@@ -1,7 +1,9 @@
 import React from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Square, Activity, Wifi, Smartphone, Monitor } from 'lucide-react';
+import { Square, Activity, Wifi, Smartphone, Monitor, MessageCircle } from 'lucide-react';
 import clsx from 'clsx';
+
+type Platform = 'whatsapp' | 'signal';
 
 interface TrackerData {
     rtt: number;
@@ -29,6 +31,7 @@ interface ContactCardProps {
     profilePic: string | null;
     onRemove: () => void;
     privacyMode?: boolean;
+    platform?: Platform;
 }
 
 export function ContactCard({
@@ -40,7 +43,8 @@ export function ContactCard({
     presence,
     profilePic,
     onRemove,
-    privacyMode = false
+    privacyMode = false,
+    platform = 'whatsapp'
 }: ContactCardProps) {
     const lastData = data[data.length - 1];
     const currentStatus = devices.length > 0
@@ -56,7 +60,16 @@ export function ContactCard({
         <div className="bg-gradient-to-br from-white to-gray-50 rounded-xl shadow-lg border border-gray-200 overflow-hidden">
             {/* Header with Stop Button */}
             <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-gray-900">{blurredNumber}</h3>
+                <div className="flex items-center gap-3">
+                    <span className={clsx(
+                        "px-2 py-1 rounded text-xs font-medium flex items-center gap-1",
+                        platform === 'whatsapp' ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
+                    )}>
+                        <MessageCircle size={12} />
+                        {platform === 'whatsapp' ? 'WhatsApp' : 'Signal'}
+                    </span>
+                    <h3 className="text-lg font-semibold text-gray-900">{blurredNumber}</h3>
+                </div>
                 <button
                     onClick={onRemove}
                     className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2 font-medium transition-colors text-sm"

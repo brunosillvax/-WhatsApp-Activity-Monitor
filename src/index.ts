@@ -62,7 +62,7 @@ import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeys
 import { pino } from 'pino';
 import { Boom } from '@hapi/boom';
 import * as qrcode from 'qrcode-terminal';
-import { WhatsAppTracker } from './tracker';
+import { WhatsAppTracker } from './tracker.js';
 import * as readline from 'readline';
 
 if (debugMode) {

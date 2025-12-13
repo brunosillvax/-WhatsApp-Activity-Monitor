@@ -1,9 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import {Eye, EyeOff, Plus, Trash2, Zap} from 'lucide-react';
-import { socket } from '../App';
+import {Eye, EyeOff, Plus, Trash2, Zap, MessageCircle, Settings} from 'lucide-react';
+import { socket, Platform, ConnectionState } from '../App';
 import { ContactCard } from './ContactCard';
+import { Login } from './Login';
 
 type ProbeMethod = 'delete' | 'reaction';
+
+interface DashboardProps {
+    connectionState: ConnectionState;
+}
 
 interface TrackerData {
     rtt: number;
@@ -30,14 +35,19 @@ interface ContactInfo {
     deviceCount: number;
     presence: string | null;
     profilePic: string | null;
+    platform: Platform;
 }
 
-export function Dashboard() {
+export function Dashboard({ connectionState }: DashboardProps) {
     const [inputNumber, setInputNumber] = useState('');
+    const [selectedPlatform, setSelectedPlatform] = useState<Platform>(
+        connectionState.whatsapp ? 'whatsapp' : 'signal'
+    );
     const [contacts, setContacts] = useState<Map<string, ContactInfo>>(new Map());
     const [error, setError] = useState<string | null>(null);
     const [privacyMode, setPrivacyMode] = useState(false);
     const [probeMethod, setProbeMethod] = useState<ProbeMethod>('delete');
+    const [showConnections, setShowConnections] = useState(false);
 
     useEffect(() => {
         function onTrackerUpdate(update: any) {
@@ -104,7 +114,7 @@ export function Dashboard() {
             });
         }
 
-        function onContactAdded(data: { jid: string, number: string }) {
+        function onContactAdded(data: { jid: string, number: string, platform?: Platform }) {
             setContacts(prev => {
                 const next = new Map(prev);
                 next.set(data.jid, {
@@ -115,7 +125,8 @@ export function Dashboard() {
                     devices: [],
                     deviceCount: 0,
                     presence: null,
-                    profilePic: null
+                    profilePic: null,
+                    platform: data.platform || 'whatsapp'
                 });
                 return next;
             });
@@ -160,7 +171,7 @@ export function Dashboard() {
 
     const handleAdd = () => {
         if (!inputNumber) return;
-        socket.emit('add-contact', inputNumber);
+        socket.emit('add-contact', { number: inputNumber, platform: selectedPlatform });
     };
 
     const handleRemove = (jid: string) => {
@@ -176,7 +187,21 @@ export function Dashboard() {
             {/* Add Contact Form */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold text-gray-900">Track Contacts</h2>
+                    <div className="flex items-center gap-4">
+                        <h2 className="text-xl font-semibold text-gray-900">Track Contacts</h2>
+                        {/* Manage Connections button */}
+                        <button
+                            onClick={() => setShowConnections(!showConnections)}
+                            className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors flex items-center gap-1 ${
+                                showConnections
+                                    ? 'bg-gray-700 text-white'
+                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                        >
+                            <Settings size={14} />
+                            {showConnections ? 'Hide Connections' : 'Manage Connections'}
+                        </button>
+                    </div>
                     <div className="flex items-center gap-4">
                         {/* Probe Method Toggle */}
                         <div className="flex items-center gap-2">
@@ -233,6 +258,39 @@ export function Dashboard() {
                     </div>
                 </div>
                 <div className="flex gap-4">
+                    {/* Platform Selector */}
+                    <div className="flex rounded-lg overflow-hidden border border-gray-300">
+                        <button
+                            onClick={() => setSelectedPlatform('whatsapp')}
+                            disabled={!connectionState.whatsapp}
+                            className={`px-4 py-2 text-sm font-medium transition-all duration-200 flex items-center gap-2 ${
+                                selectedPlatform === 'whatsapp'
+                                    ? 'bg-green-600 text-white'
+                                    : connectionState.whatsapp
+                                        ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                            }`}
+                            title={connectionState.whatsapp ? 'WhatsApp' : 'WhatsApp not connected'}
+                        >
+                            <MessageCircle size={16} />
+                            WhatsApp
+                        </button>
+                        <button
+                            onClick={() => setSelectedPlatform('signal')}
+                            disabled={!connectionState.signal}
+                            className={`px-4 py-2 text-sm font-medium transition-all duration-200 flex items-center gap-2 ${
+                                selectedPlatform === 'signal'
+                                    ? 'bg-blue-600 text-white'
+                                    : connectionState.signal
+                                        ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                            }`}
+                            title={connectionState.signal ? 'Signal' : 'Signal not connected'}
+                        >
+                            <MessageCircle size={16} />
+                            Signal
+                        </button>
+                    </div>
                     <input
                         type="text"
                         placeholder="Enter phone number (e.g. 491701234567)"
@@ -250,6 +308,11 @@ export function Dashboard() {
                 </div>
                 {error && <p className="mt-2 text-red-500 text-sm">{error}</p>}
             </div>
+
+            {/* Connections Panel */}
+            {showConnections && (
+                <Login connectionState={connectionState} />
+            )}
 
             {/* Contact Cards */}
             {contacts.size === 0 ? (
@@ -271,6 +334,7 @@ export function Dashboard() {
                             profilePic={contact.profilePic}
                             onRemove={() => handleRemove(contact.jid)}
                             privacyMode={privacyMode}
+                            platform={contact.platform}
                         />
                     ))}
                 </div>
