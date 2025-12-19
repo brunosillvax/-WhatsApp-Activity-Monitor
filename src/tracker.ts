@@ -77,6 +77,9 @@ interface DeviceMetrics {
     state: string;             // Current device state (Online/Standby/Calibrating/Offline)
     lastRtt: number;           // Most recent RTT measurement
     lastUpdate: number;        // Timestamp of last update
+    sessionStart?: number;     // Timestamp when current session started
+    totalOnlineTime: number;   // Total time online in milliseconds
+    stateHistory: Array<{ state: string; timestamp: number; duration?: number }>; // History of state changes
 }
 
 /**
@@ -105,6 +108,12 @@ export class WhatsAppTracker {
     private lastPresence: string | null = null;
     private probeMethod: ProbeMethod = 'delete'; // Default to delete method
     public onUpdate?: (data: any) => void;
+    private previousState: string = ''; // Track state changes for alerts
+    private networkTypeHistory: Array<{ type: 'wifi' | 'mobile' | 'unknown'; timestamp: number; rtt: number }> = []; // Network type inference
+    private presenceHistory: Array<{ presence: string; timestamp: number; jid: string }> = []; // History of presence changes
+    private typingIndicators: Map<string, { isTyping: boolean; timestamp: number }> = new Map(); // Typing indicators
+    private lastSeenHistory: Array<{ timestamp: number; jid: string }> = []; // Last seen timestamps
+    private connectionInfo: Map<string, { lastActive: number; connectionType?: string }> = new Map(); // Connection information
 
     constructor(sock: WASocket, targetJid: string, debugMode: boolean = false) {
         this.sock = sock;
@@ -153,18 +162,74 @@ export class WhatsAppTracker {
 
             if (update.presences) {
                 for (const [jid, presenceData] of Object.entries(update.presences)) {
-                    if (presenceData && presenceData.lastKnownPresence) {
+                    if (presenceData) {
                         // Track multi-device JIDs (including LID)
                         this.trackedJids.add(jid);
                         trackerLogger.debug(`[MULTI-DEVICE] Added JID to tracking: ${jid}`);
 
-                        this.lastPresence = presenceData.lastKnownPresence;
+                        const newPresence = presenceData.lastKnownPresence;
+                        const timestamp = Date.now();
+
+                        // Track typing indicators
+                        if (newPresence === 'composing') {
+                            this.typingIndicators.set(jid, {
+                                isTyping: true,
+                                timestamp: timestamp
+                            });
+                        } else if (newPresence && newPresence !== 'composing') {
+                            // Update typing status when not composing
+                            const typingInfo = this.typingIndicators.get(jid);
+                            if (typingInfo && typingInfo.isTyping) {
+                                this.typingIndicators.set(jid, {
+                                    isTyping: false,
+                                    timestamp: timestamp
+                                });
+                            }
+                        }
+
+                        // Track presence changes
+                        if (newPresence && newPresence !== this.lastPresence) {
+                            this.presenceHistory.push({
+                                presence: newPresence,
+                                timestamp: timestamp,
+                                jid: jid
+                            });
+                            if (this.presenceHistory.length > 100) {
+                                this.presenceHistory.shift();
+                            }
+                            trackerLogger.debug(`[PRESENCE CHANGE] ${this.lastPresence} → ${newPresence} at ${new Date(timestamp).toISOString()}`);
+                        }
+
+                        this.lastPresence = newPresence || this.lastPresence;
                         trackerLogger.debug(`[PRESENCE] Stored presence from ${jid}: ${this.lastPresence}`);
-                        break;
+
+                        // Track last seen if available
+                        if (presenceData.lastSeen) {
+                            this.lastSeenHistory.push({
+                                timestamp: presenceData.lastSeen * 1000, // Convert to milliseconds
+                                jid: jid
+                            });
+                            if (this.lastSeenHistory.length > 50) {
+                                this.lastSeenHistory.shift();
+                            }
+                        }
+
+                        // Update connection info
+                        if (!this.connectionInfo.has(jid)) {
+                            this.connectionInfo.set(jid, { lastActive: timestamp });
+                        } else {
+                            const info = this.connectionInfo.get(jid)!;
+                            info.lastActive = timestamp;
+                        }
                     }
                 }
             }
         });
+
+        // Listen for typing indicators via presence updates
+        // Typing is detected through presence updates with 'composing' status
+        // This is already handled in the presence.update listener above
+        // We'll track it when presence is 'composing'
 
         // Subscribe to presence updates
         try {
@@ -458,7 +523,10 @@ export class WhatsAppTracker {
                 recentRtts: [],
                 state: 'Calibrating...',
                 lastRtt: rtt,
-                lastUpdate: Date.now()
+                lastUpdate: Date.now(),
+                sessionStart: Date.now(),
+                totalOnlineTime: 0,
+                stateHistory: []
             });
         }
 
@@ -531,10 +599,40 @@ export class WhatsAppTracker {
 
             threshold = median * 0.9;
 
+            const previousState = metrics.state;
             if (movingAvg < threshold) {
                 metrics.state = 'Online';
             } else {
                 metrics.state = 'Standby';
+            }
+
+            // Track state changes for statistics and alerts
+            if (previousState !== metrics.state && previousState !== 'Calibrating...') {
+                const now = Date.now();
+                // Record state change
+                if (metrics.stateHistory.length > 0) {
+                    const lastEntry = metrics.stateHistory[metrics.stateHistory.length - 1];
+                    if (lastEntry.state === previousState) {
+                        lastEntry.duration = now - lastEntry.timestamp;
+                    }
+                }
+                metrics.stateHistory.push({ state: metrics.state, timestamp: now });
+                if (metrics.stateHistory.length > 100) {
+                    metrics.stateHistory.shift();
+                }
+
+                // Track online time
+                if (previousState === 'Online' && metrics.sessionStart) {
+                    metrics.totalOnlineTime += (now - metrics.sessionStart);
+                }
+                if (metrics.state === 'Online') {
+                    metrics.sessionStart = now;
+                } else {
+                    metrics.sessionStart = undefined;
+                }
+
+                // Detect network type changes (inference based on RTT patterns)
+                this.detectNetworkChange(jid);
             }
         } else {
             metrics.state = 'Calibrating...';
@@ -545,6 +643,38 @@ export class WhatsAppTracker {
 
         // Debug mode: Additional debug information
         trackerLogger.debug(`[DEBUG] RTT History length: ${metrics.rttHistory.length}, Global History: ${this.globalRttHistory.length}`);
+    }
+
+    /**
+     * Detect network type changes based on RTT patterns
+     */
+    private detectNetworkChange(jid: string) {
+        // Simple heuristic: WiFi typically has lower and more stable RTT
+        // Mobile data has higher variance and sometimes higher RTT
+        const metrics = this.deviceMetrics.get(jid);
+        if (!metrics || metrics.rttHistory.length < 10) return;
+
+        const recentRtts = metrics.rttHistory.slice(-10);
+        const avgRtt = recentRtts.reduce((a, b) => a + b, 0) / recentRtts.length;
+        const variance = recentRtts.reduce((sum, r) => sum + Math.pow(r - avgRtt, 2), 0) / recentRtts.length;
+        const stdDev = Math.sqrt(variance);
+
+        // Heuristic: Low RTT + low variance = likely WiFi
+        // High RTT or high variance = likely mobile data
+        let networkType: 'wifi' | 'mobile' | 'unknown' = 'unknown';
+        if (avgRtt < 800 && stdDev < 200) {
+            networkType = 'wifi';
+        } else if (avgRtt > 1200 || stdDev > 300) {
+            networkType = 'mobile';
+        }
+
+        const lastNetworkEntry = this.networkTypeHistory[this.networkTypeHistory.length - 1];
+        if (!lastNetworkEntry || lastNetworkEntry.type !== networkType) {
+            this.networkTypeHistory.push({ type: networkType, timestamp: Date.now(), rtt: avgRtt });
+            if (this.networkTypeHistory.length > 50) {
+                this.networkTypeHistory.shift();
+            }
+        }
     }
 
     /**
@@ -565,18 +695,147 @@ export class WhatsAppTracker {
         const globalMedian = this.calculateGlobalMedian();
         const globalThreshold = globalMedian * 0.9;
 
+        // Get statistics
+        const stats = this.getStatistics();
+
         const data = {
             devices,
             deviceCount: this.trackedJids.size,
             presence: this.lastPresence,
             // Global stats for charts
             median: globalMedian,
-            threshold: globalThreshold
+            threshold: globalThreshold,
+            // Advanced statistics
+            statistics: stats,
+            networkHistory: this.networkTypeHistory.slice(-20), // Last 20 network changes
+            // Enhanced capture data
+            presenceHistory: this.presenceHistory.slice(-20), // Last 20 presence changes
+            typingStatus: this.typingIndicators.get(this.targetJid) || null,
+            lastSeen: this.lastSeenHistory.length > 0 ? this.lastSeenHistory[this.lastSeenHistory.length - 1] : null,
+            connectionInfo: Array.from(this.connectionInfo.entries()).map(([jid, info]) => ({
+                jid,
+                lastActive: info.lastActive,
+                connectionType: info.connectionType || 'unknown'
+            }))
         };
+
+        // Check for state changes for alerts
+        const currentState = devices.length > 0 ? devices[0].state : '';
+        if (this.previousState && this.previousState !== currentState) {
+            data.stateChange = {
+                from: this.previousState,
+                to: currentState,
+                timestamp: Date.now()
+            };
+        }
+        this.previousState = currentState;
 
         if (this.onUpdate) {
             this.onUpdate(data);
         }
+    }
+
+    /**
+     * Get advanced statistics about tracking
+     */
+    public getStatistics() {
+        const allMetrics = Array.from(this.deviceMetrics.values());
+        if (allMetrics.length === 0) return null;
+
+        const primaryMetrics = allMetrics[0];
+        const now = Date.now();
+        const trackingStartTime = primaryMetrics.stateHistory.length > 0 
+            ? primaryMetrics.stateHistory[0].timestamp 
+            : now;
+
+        // Calculate active hours (hours when device was online)
+        const activeHours: number[] = [];
+        primaryMetrics.stateHistory.forEach(entry => {
+            if (entry.state === 'Online') {
+                const hour = new Date(entry.timestamp).getHours();
+                if (!activeHours.includes(hour)) {
+                    activeHours.push(hour);
+                }
+            }
+        });
+
+        // Calculate session durations
+        const sessions: Array<{ start: number; end?: number; duration?: number }> = [];
+        let currentSession: { start: number; end?: number; duration?: number } | null = null;
+        
+        primaryMetrics.stateHistory.forEach(entry => {
+            if (entry.state === 'Online' && !currentSession) {
+                currentSession = { start: entry.timestamp };
+            } else if (entry.state !== 'Online' && currentSession) {
+                currentSession.end = entry.timestamp;
+                currentSession.duration = entry.timestamp - currentSession.start;
+                sessions.push(currentSession);
+                currentSession = null;
+            }
+        });
+        if (currentSession) {
+            sessions.push({ ...currentSession, end: now, duration: now - currentSession.start });
+        }
+
+        const avgSessionDuration = sessions.length > 0
+            ? sessions.reduce((sum, s) => sum + (s.duration || 0), 0) / sessions.length
+            : 0;
+
+        return {
+            totalOnlineTime: primaryMetrics.totalOnlineTime,
+            trackingDuration: now - trackingStartTime,
+            activeHours,
+            sessionCount: sessions.length,
+            avgSessionDuration,
+            lastNetworkType: this.networkTypeHistory.length > 0 
+                ? this.networkTypeHistory[this.networkTypeHistory.length - 1].type 
+                : 'unknown',
+            networkChanges: this.networkTypeHistory.length
+        };
+    }
+
+    /**
+     * Get all tracking data for export
+     */
+    public getExportData() {
+        const allMetrics = Array.from(this.deviceMetrics.entries());
+        const stats = this.getStatistics();
+        
+        return {
+            targetJid: this.targetJid,
+            trackingStart: allMetrics.length > 0 && allMetrics[0][1].stateHistory.length > 0
+                ? allMetrics[0][1].stateHistory[0].timestamp
+                : Date.now(),
+            trackingEnd: Date.now(),
+            statistics: stats,
+            devices: allMetrics.map(([jid, metrics]) => ({
+                jid,
+                stateHistory: metrics.stateHistory,
+                rttHistory: metrics.rttHistory,
+                totalOnlineTime: metrics.totalOnlineTime
+            })),
+            networkHistory: this.networkTypeHistory,
+            globalRttHistory: this.globalRttHistory,
+            // Enhanced data
+            presenceHistory: this.presenceHistory,
+            lastSeenHistory: this.lastSeenHistory,
+            typingHistory: Array.from(this.typingIndicators.entries()),
+            connectionInfo: Array.from(this.connectionInfo.entries())
+        };
+    }
+
+    /**
+     * Get enhanced capture data
+     */
+    public getEnhancedCapture() {
+        return {
+            currentPresence: this.lastPresence,
+            presenceHistory: this.presenceHistory,
+            typingStatus: this.typingIndicators.get(this.targetJid),
+            lastSeen: this.lastSeenHistory.length > 0 ? this.lastSeenHistory[this.lastSeenHistory.length - 1] : null,
+            connectionInfo: Array.from(this.connectionInfo.entries()),
+            trackedDevices: Array.from(this.trackedJids)
+        };
     }
 
     /**

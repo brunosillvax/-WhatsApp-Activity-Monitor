@@ -1,5 +1,5 @@
 /**
- * Device Activity Tracker - Web Server
+ * WhatsApp Activity Monitor - Web Server
  *
  * HTTP server with Socket.IO for real-time tracking visualization.
  * Provides REST API and WebSocket interface for the React frontend.
@@ -22,6 +22,7 @@ const SIGNAL_API_URL = process.env.SIGNAL_API_URL || 'http://localhost:8080';
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -351,7 +352,41 @@ io.on('connection', (socket) => {
                     tracker.setProbeMethod(globalProbeMethod);
                     trackers.set(result.jid, { tracker, platform: 'whatsapp' });
 
-                    tracker.onUpdate = (updateData) => {
+                    let previousState: string | null = null;
+                    tracker.onUpdate = (updateData: any) => {
+                        // Check for state changes for alerts
+                        const currentState = updateData.devices?.[0]?.state;
+                        if (previousState && previousState !== currentState) {
+                            io.emit('alert', {
+                                jid: result.jid,
+                                type: 'state-change',
+                                message: `Contact ${contactName} changed from ${previousState} to ${currentState}`,
+                                from: previousState,
+                                to: currentState,
+                                timestamp: Date.now()
+                            });
+                        }
+                        previousState = currentState;
+
+                        // Check for network changes
+                        if (updateData.networkHistory && updateData.networkHistory.length > 0) {
+                            const lastNetwork = updateData.networkHistory[updateData.networkHistory.length - 1];
+                            const prevNetwork = updateData.networkHistory.length > 1 
+                                ? updateData.networkHistory[updateData.networkHistory.length - 2]
+                                : null;
+                            
+                            if (prevNetwork && prevNetwork.type !== lastNetwork.type) {
+                                io.emit('alert', {
+                                    jid: result.jid,
+                                    type: 'network-change',
+                                    message: `Network type changed from ${prevNetwork.type} to ${lastNetwork.type}`,
+                                    from: prevNetwork.type,
+                                    to: lastNetwork.type,
+                                    timestamp: Date.now()
+                                });
+                            }
+                        }
+
                         io.emit('tracker-update', {
                             jid: result.jid,
                             platform: 'whatsapp',
@@ -421,6 +456,72 @@ io.on('connection', (socket) => {
         io.emit('probe-method', method);
         console.log(`Probe method changed to: ${method}`);
     });
+
+    // Request statistics for a contact
+    socket.on('get-statistics', (jid: string) => {
+        const entry = trackers.get(jid);
+        if (entry && 'getStatistics' in entry.tracker) {
+            const stats = (entry.tracker as WhatsAppTracker).getStatistics();
+            socket.emit('statistics', { jid, statistics: stats });
+        }
+    });
+
+    // Request export data for a contact
+    socket.on('export-data', (jid: string) => {
+        const entry = trackers.get(jid);
+        if (entry && 'getExportData' in entry.tracker) {
+            const exportData = (entry.tracker as WhatsAppTracker).getExportData();
+            socket.emit('export-data-response', { jid, data: exportData });
+        }
+    });
+
+    // Request enhanced capture data
+    socket.on('get-enhanced-capture', (jid: string) => {
+        const entry = trackers.get(jid);
+        if (entry && 'getEnhancedCapture' in entry.tracker) {
+            const enhancedData = (entry.tracker as WhatsAppTracker).getEnhancedCapture();
+            socket.emit('enhanced-capture-response', { jid, data: enhancedData });
+        }
+    });
+});
+
+// REST API endpoints for export
+app.get('/api/export/:jid', (req, res) => {
+    const jid = req.params.jid;
+    const entry = trackers.get(jid);
+    
+    if (!entry || !('getExportData' in entry.tracker)) {
+        return res.status(404).json({ error: 'Contact not found or export not available' });
+    }
+
+    const exportData = (entry.tracker as WhatsAppTracker).getExportData();
+    res.json(exportData);
+});
+
+// Export as CSV
+app.get('/api/export/:jid/csv', (req, res) => {
+    const jid = req.params.jid;
+    const entry = trackers.get(jid);
+    
+    if (!entry || !('getExportData' in entry.tracker)) {
+        return res.status(404).json({ error: 'Contact not found or export not available' });
+    }
+
+    const exportData = (entry.tracker as WhatsAppTracker).getExportData();
+    
+    // Convert to CSV
+    let csv = 'Timestamp,State,RTT,Average RTT\n';
+    if (exportData.devices && exportData.devices.length > 0) {
+        const device = exportData.devices[0];
+        device.stateHistory.forEach((entry: any) => {
+            const date = new Date(entry.timestamp).toISOString();
+            csv += `${date},${entry.state},${entry.duration || ''},${''}\n`;
+        });
+    }
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="tracking_${jid}_${Date.now()}.csv"`);
+    res.send(csv);
 });
 
 const PORT = 3001;

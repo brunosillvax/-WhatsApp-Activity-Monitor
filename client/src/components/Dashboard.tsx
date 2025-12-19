@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {Eye, EyeOff, Plus, Trash2, Zap, MessageCircle, Settings} from 'lucide-react';
-import { socket, Platform, ConnectionState } from '../App';
+import { socket as appSocket, Platform, ConnectionState } from '../App';
 import { ContactCard } from './ContactCard';
 import { Login } from './Login';
 
@@ -36,6 +36,10 @@ interface ContactInfo {
     presence: string | null;
     profilePic: string | null;
     platform: Platform;
+    presenceHistory?: Array<{ presence: string; timestamp: number; jid: string }>;
+    typingStatus?: { isTyping: boolean; timestamp: number } | null;
+    lastSeen?: { timestamp: number; jid: string } | null;
+    connectionInfo?: Array<{ jid: string; lastActive: number; connectionType?: string }>;
 }
 
 export function Dashboard({ connectionState }: DashboardProps) {
@@ -48,6 +52,7 @@ export function Dashboard({ connectionState }: DashboardProps) {
     const [privacyMode, setPrivacyMode] = useState(false);
     const [probeMethod, setProbeMethod] = useState<ProbeMethod>('delete');
     const [showConnections, setShowConnections] = useState(false);
+    const [alerts, setAlerts] = useState<Array<{ id: number; message: string; type: string; timestamp: number }>>([]);
 
     useEffect(() => {
         function onTrackerUpdate(update: any) {
@@ -83,6 +88,20 @@ export function Dashboard({ connectionState }: DashboardProps) {
                             timestamp: Date.now(),
                         };
                         updatedContact.data = [...updatedContact.data, newDataPoint];
+                    }
+
+                    // Store enhanced capture data if available
+                    if (data.presenceHistory !== undefined) {
+                        updatedContact.presenceHistory = data.presenceHistory;
+                    }
+                    if (data.typingStatus !== undefined) {
+                        updatedContact.typingStatus = data.typingStatus;
+                    }
+                    if (data.lastSeen !== undefined) {
+                        updatedContact.lastSeen = data.lastSeen;
+                    }
+                    if (data.connectionInfo !== undefined) {
+                        updatedContact.connectionInfo = data.connectionInfo;
                     }
 
                     next.set(jid, updatedContact);
@@ -150,6 +169,27 @@ export function Dashboard({ connectionState }: DashboardProps) {
             setProbeMethod(method);
         }
 
+        function onAlert(alert: { jid: string; type: string; message: string; timestamp: number }) {
+            setAlerts(prev => {
+                const newAlert = { id: Date.now(), ...alert };
+                const updated = [newAlert, ...prev].slice(0, 10); // Keep last 10 alerts
+                return updated;
+            });
+            
+            // Show browser notification if permitted
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Device Activity Tracker', {
+                    body: alert.message,
+                    icon: '/favicon.ico'
+                });
+            }
+        }
+
+        // Request notification permission
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+
         function onTrackedContacts(contacts: { id: string, platform: Platform }[]) {
             setContacts(prev => {
                 const next = new Map(prev);
@@ -180,41 +220,43 @@ export function Dashboard({ connectionState }: DashboardProps) {
             });
         }
 
-        socket.on('tracker-update', onTrackerUpdate);
-        socket.on('profile-pic', onProfilePic);
-        socket.on('contact-name', onContactName);
-        socket.on('contact-added', onContactAdded);
-        socket.on('contact-removed', onContactRemoved);
-        socket.on('error', onError);
-        socket.on('probe-method', onProbeMethod);
-        socket.on('tracked-contacts', onTrackedContacts);
+        appSocket.on('tracker-update', onTrackerUpdate);
+        appSocket.on('profile-pic', onProfilePic);
+        appSocket.on('contact-name', onContactName);
+        appSocket.on('contact-added', onContactAdded);
+        appSocket.on('contact-removed', onContactRemoved);
+        appSocket.on('error', onError);
+        appSocket.on('probe-method', onProbeMethod);
+        appSocket.on('tracked-contacts', onTrackedContacts);
+        appSocket.on('alert', onAlert);
 
         // Request tracked contacts after listeners are set up
-        socket.emit('get-tracked-contacts');
+        appSocket.emit('get-tracked-contacts');
 
         return () => {
-            socket.off('tracker-update', onTrackerUpdate);
-            socket.off('profile-pic', onProfilePic);
-            socket.off('contact-name', onContactName);
-            socket.off('contact-added', onContactAdded);
-            socket.off('contact-removed', onContactRemoved);
-            socket.off('error', onError);
-            socket.off('probe-method', onProbeMethod);
-            socket.off('tracked-contacts', onTrackedContacts);
+            appSocket.off('tracker-update', onTrackerUpdate);
+            appSocket.off('profile-pic', onProfilePic);
+            appSocket.off('contact-name', onContactName);
+            appSocket.off('contact-added', onContactAdded);
+            appSocket.off('contact-removed', onContactRemoved);
+            appSocket.off('error', onError);
+            appSocket.off('probe-method', onProbeMethod);
+            appSocket.off('tracked-contacts', onTrackedContacts);
+            appSocket.off('alert', onAlert);
         };
     }, []);
 
     const handleAdd = () => {
         if (!inputNumber) return;
-        socket.emit('add-contact', { number: inputNumber, platform: selectedPlatform });
+        appSocket.emit('add-contact', { number: inputNumber, platform: selectedPlatform });
     };
 
     const handleRemove = (jid: string) => {
-        socket.emit('remove-contact', jid);
+        appSocket.emit('remove-contact', jid);
     };
 
     const handleProbeMethodChange = (method: ProbeMethod) => {
-        socket.emit('set-probe-method', method);
+        appSocket.emit('set-probe-method', method);
     };
 
     return (
@@ -344,6 +386,44 @@ export function Dashboard({ connectionState }: DashboardProps) {
                 {error && <p className="mt-2 text-red-500 text-sm">{error}</p>}
             </div>
 
+            {/* Alerts Panel */}
+            {alerts.length > 0 && (
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-3">Alertas Recentes</h3>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {alerts.map(alert => (
+                            <div
+                                key={alert.id}
+                                className={`p-3 rounded-lg text-sm ${
+                                    alert.type === 'state-change' ? 'bg-blue-50 border border-blue-200' :
+                                    alert.type === 'network-change' ? 'bg-yellow-50 border border-yellow-200' :
+                                    'bg-gray-50 border border-gray-200'
+                                }`}
+                            >
+                                <div className="flex justify-between items-start">
+                                    <span className="text-gray-700">{alert.message}</span>
+                                    <button
+                                        onClick={() => setAlerts(prev => prev.filter(a => a.id !== alert.id))}
+                                        className="text-gray-400 hover:text-gray-600 ml-2"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1">
+                                    {new Date(alert.timestamp).toLocaleTimeString()}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    <button
+                        onClick={() => setAlerts([])}
+                        className="mt-3 text-sm text-gray-600 hover:text-gray-800"
+                    >
+                        Limpar todos
+                    </button>
+                </div>
+            )}
+
             {/* Connections Panel */}
             {showConnections && (
                 <Login connectionState={connectionState} />
@@ -370,6 +450,7 @@ export function Dashboard({ connectionState }: DashboardProps) {
                             onRemove={() => handleRemove(contact.jid)}
                             privacyMode={privacyMode}
                             platform={contact.platform}
+                            socket={appSocket}
                         />
                     ))}
                 </div>

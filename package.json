@@ -1,8 +1,8 @@
 {
-  "name": "device-activity-tracker",
-  "version": "1.0.0",
+  "name": "whatsapp-activity-monitor",
+  "version": "2.0.0",
   "type": "module",
-  "description": "A proof-of-concept tool demonstrating privacy vulnerabilities in messaging apps through RTT-based activity analysis",
+  "description": "Ferramenta de monitoramento de atividade via WhatsApp usando análise de RTT - Demonstra vulnerabilidades de privacidade",
   "main": "dist/index.js",
   "keywords": [
     "whatsapp",
@@ -28,7 +28,8 @@
   "scripts": {
     "build": "tsc",
     "start": "npx tsx src/index.ts",
-    "start:server": "npm run start:signal-api && npx tsx src/server.ts",
+    "start:server": "npm run start:signal-api || echo Signal API não disponível, continuando sem Signal... && npx tsx src/server.ts",
+    "start:server:whatsapp-only": "npx tsx src/server.ts",
     "start:signal-api": "npx tsx src/scripts/init-signal.ts",
     "start:client": "cd client && npm start",
     "dev": "npm run start:server",
