@@ -19,12 +19,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gommzystudio/device-activity-tracker.git"
+    "url": "https://github.com/brunosillvax/-WhatsApp-Activity-Monitor.git"
   },
   "bugs": {
-    "url": "https://github.com/gommzystudio/device-activity-tracker/issues"
+    "url": "https://github.com/brunosillvax/-WhatsApp-Activity-Monitor/issues"
   },
-  "homepage": "https://github.com/gommzystudio/device-activity-tracker#readme",
+  "homepage": "https://github.com/brunosillvax/-WhatsApp-Activity-Monitor#readme",
   "scripts": {
     "build": "tsc",
     "start": "npx tsx src/index.ts",

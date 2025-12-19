@@ -130,8 +130,8 @@ O sistema mede o tempo entre o envio da sonda e o recebimento do CLIENT ACK (Sta
 
 ```bash
 # Clone o repositório
-git clone https://github.com/gommzystudio/device-activity-tracker.git
-cd device-activity-tracker
+git clone https://github.com/brunosillvax/-WhatsApp-Activity-Monitor.git
+cd -WhatsApp-Activity-Monitor
 
 # Instale as dependências
 npm install
@@ -227,7 +227,7 @@ npm run start:client
 ## 📁 Estrutura do Projeto
 
 ```
-device-activity-tracker/
+whatsapp-activity-monitor/
 ├── src/
 │   ├── tracker.ts         # Lógica de análise RTT do WhatsApp
 │   ├── signal-tracker.ts  # Lógica de análise RTT do Signal
